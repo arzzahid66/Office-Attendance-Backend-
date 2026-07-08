@@ -26,6 +26,9 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
         password_hash=hash_password(payload.password),
         role="employee",
         status="pending",
+        department=payload.department,
+        job_title=payload.job_title,
+        city=payload.city,
     )
     db.add(user)
     await db.commit()

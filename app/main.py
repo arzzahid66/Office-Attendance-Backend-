@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.bootstrap import ensure_admin_user
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.routers import admin, attendance, auth, checks, debug, networks, reports, wfh
+from app.routers import admin, attendance, auth, checks, debug, networks, reports, schedule, wfh
 from app.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
@@ -41,6 +41,7 @@ app.include_router(checks.router, prefix="/api/checks", tags=["checks"])
 app.include_router(networks.router, prefix="/api/admin/office-networks", tags=["office-networks"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(wfh.router, prefix="/api", tags=["wfh"])
+app.include_router(schedule.router, prefix="/api", tags=["schedule"])
 app.include_router(reports.router, prefix="/api/admin/reports", tags=["reports"])
 if settings.dev_mode:
     app.include_router(debug.router, prefix="/api/debug", tags=["debug"])

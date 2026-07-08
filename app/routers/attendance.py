@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.attendance_service import get_attendance_day, get_or_create_attendance_day, has_approved_wfh, ip_matches_office
+from app.attendance_service import (
+    get_attendance_day,
+    get_matching_office_network,
+    get_or_create_attendance_day,
+    has_approved_wfh,
+    ip_matches_office,
+)
 from app.database import get_db
 from app.deps import get_current_device, require_active_employee
 from app.ip_utils import get_client_ip
@@ -22,7 +28,7 @@ async def today(
     user: User = Depends(require_active_employee),
 ):
     ip = get_client_ip(request)
-    matched = await ip_matches_office(db, ip)
+    network = await get_matching_office_network(db, ip)
     day = await get_attendance_day(db, user.id, today_local())
 
     checks_result = await db.execute(
@@ -33,7 +39,8 @@ async def today(
 
     return TodayOut(
         detected_ip=ip,
-        ip_matched=matched,
+        ip_matched=network is not None,
+        matched_location=network.label if network else None,
         attendance=AttendanceDayOut.model_validate(day) if day else None,
         checks=[RandomCheckOut.model_validate(c) for c in checks],
     )
@@ -58,7 +65,8 @@ async def check_in(
     device: Device = Depends(get_current_device),
 ):
     ip = get_client_ip(request)
-    matched = await ip_matches_office(db, ip)
+    network = await get_matching_office_network(db, ip)
+    matched = network is not None
     today_date = today_local()
     wfh_approved = await has_approved_wfh(db, user.id, today_date)
 
@@ -73,6 +81,8 @@ async def check_in(
     if day.check_in is None:
         day.check_in = now
     day.mode = "office" if matched else "wfh"
+    day.source_ip = ip
+    day.location = network.label if network else None
 
     device.last_seen_at = now
     db.add(Heartbeat(device_id=device.id, ts=now, source_ip=ip, ip_matched=matched))
@@ -90,7 +100,8 @@ async def heartbeat(
     device: Device = Depends(get_current_device),
 ):
     ip = get_client_ip(request)
-    matched = await ip_matches_office(db, ip)
+    network = await get_matching_office_network(db, ip)
+    matched = network is not None
     now = now_utc()
     today_date = today_local()
 
@@ -98,12 +109,21 @@ async def heartbeat(
     device.last_seen_at = now
 
     day = await get_or_create_attendance_day(db, user.id, today_date)
+    # Auto check-in: opening the app on the office network marks presence without a
+    # button press. Only triggers on a matched IP so it can't check someone in remotely.
+    if matched and day.check_in is None:
+        day.check_in = now
+        day.mode = "office"
+    if matched:
+        # Keep the latest matched location/IP so the dashboard shows where they are now.
+        day.source_ip = ip
+        day.location = network.label
     is_wfh_day = day.mode == "wfh"
     if matched or is_wfh_day:
         day.check_out = now
 
     await db.commit()
-    return {"ip": ip, "matched": matched}
+    return {"ip": ip, "matched": matched, "location": network.label if network else None}
 
 
 @router.post("/check-out", response_model=AttendanceDayOut)

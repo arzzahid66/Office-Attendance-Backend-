@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
@@ -8,6 +8,9 @@ class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    department: str = Field(min_length=1, max_length=120)
+    job_title: str = Field(min_length=1, max_length=120)
+    city: str = Field(min_length=1, max_length=120)
 
 
 class LoginRequest(BaseModel):
@@ -26,6 +29,9 @@ class UserOut(BaseModel):
     email: str
     role: Literal["admin", "employee"]
     status: Literal["pending", "active", "disabled"]
+    department: str | None
+    job_title: str | None
+    city: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -91,6 +97,8 @@ class AttendanceDayOut(BaseModel):
     mode: Literal["office", "wfh", "flagged", "absent", "pending"]
     check_in: datetime | None
     check_out: datetime | None
+    source_ip: str | None
+    location: str | None
     passed_checks: int
     total_checks: int
     note: str | None
@@ -101,6 +109,7 @@ class AttendanceDayOut(BaseModel):
 class TodayOut(BaseModel):
     detected_ip: str
     ip_matched: bool
+    matched_location: str | None
     attendance: AttendanceDayOut | None
     checks: list[RandomCheckOut]
 
@@ -126,6 +135,43 @@ class WfhRequestOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ScheduleRequestIn(BaseModel):
+    start_date: date
+    end_date: date
+    start_time: time
+    end_time: time
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ScheduleDecisionIn(BaseModel):
+    status: Literal["approved", "rejected"]
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ScheduleRequestOut(BaseModel):
+    id: int
+    user_id: int
+    start_date: date
+    end_date: date
+    start_time: time
+    end_time: time
+    reason: str
+    status: Literal["pending", "approved", "rejected"]
+    decided_by: int | None
+    decided_at: datetime | None
+    decision_note: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class ScheduleRequestAdminOut(ScheduleRequestOut):
+    name: str
+    email: str
+    department: str | None
+    job_title: str | None
+    city: str | None
+
+
 class FlaggedResolveIn(BaseModel):
     mode: Literal["office", "wfh", "flagged", "absent"]
     note: str | None = None
@@ -136,6 +182,9 @@ class EmployeeOut(BaseModel):
     name: str
     email: str
     status: Literal["pending", "active", "disabled"]
+    department: str | None
+    job_title: str | None
+    city: str | None
     created_at: datetime
     active_device_count: int
 
@@ -147,6 +196,8 @@ class DashboardEntryOut(BaseModel):
     mode: Literal["office", "wfh", "flagged", "absent", "pending"]
     check_in: datetime | None
     check_out: datetime | None
+    source_ip: str | None
+    location: str | None
     last_heartbeat_at: datetime | None
 
 

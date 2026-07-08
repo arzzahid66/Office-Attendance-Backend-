@@ -34,11 +34,28 @@ async def list_employees(db: AsyncSession = Depends(get_db), _: User = Depends(r
             name=e.name,
             email=e.email,
             status=e.status,
+            department=e.department,
+            job_title=e.job_title,
+            city=e.city,
             created_at=e.created_at,
             active_device_count=counts.get(e.id, 0),
         )
         for e in employees
     ]
+
+
+def _employee_out(employee: User, active_device_count: int = 0) -> EmployeeOut:
+    return EmployeeOut(
+        id=employee.id,
+        name=employee.name,
+        email=employee.email,
+        status=employee.status,
+        department=employee.department,
+        job_title=employee.job_title,
+        city=employee.city,
+        created_at=employee.created_at,
+        active_device_count=active_device_count,
+    )
 
 
 @router.post("/employees/{employee_id}/approve", response_model=EmployeeOut)
@@ -47,14 +64,7 @@ async def approve_employee(employee_id: int, db: AsyncSession = Depends(get_db),
     employee.status = "active"
     await log_action(db, admin.id, "employee_approved", f"user_id={employee_id}")
     await db.commit()
-    return EmployeeOut(
-        id=employee.id,
-        name=employee.name,
-        email=employee.email,
-        status=employee.status,
-        created_at=employee.created_at,
-        active_device_count=0,
-    )
+    return _employee_out(employee)
 
 
 @router.post("/employees/{employee_id}/disable", response_model=EmployeeOut)
@@ -63,14 +73,7 @@ async def disable_employee(employee_id: int, db: AsyncSession = Depends(get_db),
     employee.status = "disabled"
     await log_action(db, admin.id, "employee_disabled", f"user_id={employee_id}")
     await db.commit()
-    return EmployeeOut(
-        id=employee.id,
-        name=employee.name,
-        email=employee.email,
-        status=employee.status,
-        created_at=employee.created_at,
-        active_device_count=0,
-    )
+    return _employee_out(employee)
 
 
 @router.post("/employees/{employee_id}/enable", response_model=EmployeeOut)
@@ -79,14 +82,7 @@ async def enable_employee(employee_id: int, db: AsyncSession = Depends(get_db), 
     employee.status = "active"
     await log_action(db, admin.id, "employee_enabled", f"user_id={employee_id}")
     await db.commit()
-    return EmployeeOut(
-        id=employee.id,
-        name=employee.name,
-        email=employee.email,
-        status=employee.status,
-        created_at=employee.created_at,
-        active_device_count=0,
-    )
+    return _employee_out(employee)
 
 
 @router.get("/employees/{employee_id}/devices", response_model=list[DeviceOut])
@@ -136,6 +132,8 @@ async def dashboard(db: AsyncSession = Depends(get_db), _: User = Depends(requir
                 mode=day.mode if day else "pending",
                 check_in=day.check_in if day else None,
                 check_out=day.check_out if day else None,
+                source_ip=day.source_ip if day else None,
+                location=day.location if day else None,
                 last_heartbeat_at=last_seen_by_user.get(emp.id),
             )
         )

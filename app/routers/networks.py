@@ -43,6 +43,13 @@ async def create_network(
     return network
 
 
+@router.get("/current-ip")
+async def current_ip(request: Request, _: User = Depends(require_admin)):
+    """Returns the public IP the admin is currently connecting from, without saving it.
+    Lets the admin/CEO see their office WiFi's public IP before adding it as a network."""
+    return {"detected_ip": get_client_ip(request)}
+
+
 @router.post("/add-current-ip", response_model=OfficeNetworkOut, status_code=status.HTTP_201_CREATED)
 async def add_current_ip(
     request: Request, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)

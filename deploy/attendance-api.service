@@ -1,0 +1,33 @@
+# API process for the office-attendance backend.
+#
+# Today the VM runs a bare `nohup uvicorn ...`, which does NOT survive a reboot. This unit
+# fixes that. It binds to 127.0.0.1 only — Nginx/Caddy terminates TLS and proxies to it.
+#
+# RUN_SCHEDULER is deliberately NOT set here: the jobs run in attendance-scheduler.service.
+# If you ever add workers (-w N), this stays correct, because no worker starts the scheduler.
+#
+# Install:
+#   sudo cp deploy/attendance-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now attendance-api
+#   sudo journalctl -u attendance-api -f
+#
+# Adjust User, WorkingDirectory and the venv path to match your VM.
+
+[Unit]
+Description=Office Attendance - API (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/backed/Office-Attendance-Backend-
+Environment=RUN_SCHEDULER=false
+# DATABASE_URL, TRUST_PROXY etc. are read from the project's .env by app.config.
+ExecStart=/home/ubuntu/backed/Office-Attendance-Backend-/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

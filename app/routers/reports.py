@@ -45,16 +45,23 @@ async def _build_report(db: AsyncSession, month: str) -> list[MonthlyReportRow]:
     rows = []
     for emp in employees:
         emp_days = days_by_user.get(emp.id, [])
+
+        def count(status_value: str, days: list[AttendanceDay] = emp_days) -> int:
+            return sum(1 for d in days if d.status == status_value)
+
         rows.append(
             MonthlyReportRow(
                 user_id=emp.id,
                 name=emp.name,
                 email=emp.email,
-                office_days=sum(1 for d in emp_days if d.mode == "office"),
-                wfh_days=sum(1 for d in emp_days if d.mode == "wfh"),
-                flagged_days=sum(1 for d in emp_days if d.mode == "flagged"),
-                absent_days=sum(1 for d in emp_days if d.mode == "absent"),
-                pending_days=sum(1 for d in emp_days if d.mode == "pending"),
+                present_days=count("present"),
+                late_days=count("late"),
+                flagged_days=count("flagged"),
+                absent_days=count("absent"),
+                leave_days=count("leave"),
+                off_days=count("off_day"),
+                gps_days=sum(1 for d in emp_days if d.method == "gps"),
+                gps_pending_days=sum(1 for d in emp_days if d.verification == "gps_pending"),
             )
         )
     return rows
@@ -79,9 +86,14 @@ async def export_report(
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["Name", "Email", "Office Days", "WFH Days", "Flagged Days", "Absent Days", "Pending Days"])
+    writer.writerow(
+        ["Name", "Email", "Present", "Late", "Flagged", "Absent", "Leave", "Off Days", "GPS Days", "GPS Pending"]
+    )
     for r in rows:
-        writer.writerow([r.name, r.email, r.office_days, r.wfh_days, r.flagged_days, r.absent_days, r.pending_days])
+        writer.writerow(
+            [r.name, r.email, r.present_days, r.late_days, r.flagged_days, r.absent_days,
+             r.leave_days, r.off_days, r.gps_days, r.gps_pending_days]
+        )
     buffer.seek(0)
 
     return StreamingResponse(

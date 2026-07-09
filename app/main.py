@@ -9,8 +9,9 @@ from fastapi.staticfiles import StaticFiles
 from app.bootstrap import ensure_admin_user
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.routers import admin, attendance, auth, checks, debug, networks, reports, schedule, wfh
-from app.scheduler import start_scheduler, stop_scheduler
+from app.app_state import get_time_override
+from app.routers import admin, attendance, auth, debug, offices, reports, rosters
+from app.timeutil import set_time_override
 
 settings = get_settings()
 
@@ -19,9 +20,10 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await ensure_admin_user(db)
-    start_scheduler()
+    # Scheduler is intentionally NOT started here. In Phase 1 it runs as a separate
+    # process (app/scheduler_main.py, gated by RUN_SCHEDULER) so gunicorn workers never
+    # double-run the jobs. Wired up in Step 5.
     yield
-    stop_scheduler()
 
 
 app = FastAPI(title="Office Attendance POC", lifespan=lifespan)
@@ -35,13 +37,22 @@ app.add_middleware(
 )
 
 
+if settings.dev_mode:
+    # DEV-only: load the app_state time override into the request's ContextVar so now_utc()
+    # honours /debug/set-time. Never mounted in production, so zero cost there.
+    @app.middleware("http")
+    async def _apply_time_override(request, call_next):
+        async with AsyncSessionLocal() as db:
+            dt = await get_time_override(db)
+        set_time_override(dt)
+        return await call_next(request)
+
+
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(rosters.router, prefix="/api/rosters", tags=["rosters"])
+app.include_router(offices.router, prefix="/api/admin/offices", tags=["offices"])
 app.include_router(attendance.router, prefix="/api/attendance", tags=["attendance"])
-app.include_router(checks.router, prefix="/api/checks", tags=["checks"])
-app.include_router(networks.router, prefix="/api/admin/office-networks", tags=["office-networks"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
-app.include_router(wfh.router, prefix="/api", tags=["wfh"])
-app.include_router(schedule.router, prefix="/api", tags=["schedule"])
 app.include_router(reports.router, prefix="/api/admin/reports", tags=["reports"])
 if settings.dev_mode:
     app.include_router(debug.router, prefix="/api/debug", tags=["debug"])

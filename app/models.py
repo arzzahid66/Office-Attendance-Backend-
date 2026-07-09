@@ -5,6 +5,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -12,10 +13,59 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+
+class Office(Base):
+    """A physical branch. `public_ips` is the set of egress IPs seen when on its WiFi;
+    lat/long + radius_meters back the GPS fallback. Coordinates are nullable so the
+    office can be seeded as a placeholder and filled in from the admin UI."""
+
+    __tablename__ = "offices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    public_ips: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    radius_meters: Mapped[int] = mapped_column(Integer, nullable=False, default=80, server_default="80")
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Asia/Karachi", server_default="Asia/Karachi"
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Roster(Base):
+    """Shift timing AND working days together — some staff work 10-19 Mon-Fri, others
+    10-19 Fri-Sun. `working_days` uses Python's weekday() encoding: 0=Mon .. 6=Sun.
+    Overnight shifts are out of scope for Phase 1 (see ck_rosters_time_order)."""
+
+    __tablename__ = "rosters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[time] = mapped_column(Time, nullable=False)
+    grace_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15, server_default="15")
+    working_days: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    office_id: Mapped[int] = mapped_column(ForeignKey("offices.id"), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    office: Mapped["Office"] = relationship(lazy="selectin")
+
+    __table_args__ = (CheckConstraint("end_time > start_time", name="ck_rosters_time_order"),)
 
 
 class User(Base):
@@ -24,19 +74,32 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="employee")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+
     department: Mapped[str | None] = mapped_column(String(120), nullable=True)
     job_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
     city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    # Both are kept: we must know what the employee asked for vs what admin granted.
+    requested_roster_id: Mapped[int | None] = mapped_column(ForeignKey("rosters.id"), nullable=True)
+    assigned_roster_id: Mapped[int | None] = mapped_column(ForeignKey("rosters.id"), nullable=True)
+    admin_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     devices: Mapped[list["Device"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    # selectin (not lazy="select") because async SQLAlchemy raises MissingGreenlet on implicit lazy loads.
+    assigned_roster: Mapped["Roster | None"] = relationship(foreign_keys=[assigned_roster_id], lazy="selectin")
+    requested_roster: Mapped["Roster | None"] = relationship(foreign_keys=[requested_roster_id], lazy="selectin")
 
     __table_args__ = (
         CheckConstraint("role in ('admin','employee')", name="ck_users_role"),
-        CheckConstraint("status in ('pending','active','disabled')", name="ck_users_status"),
+        CheckConstraint("status in ('pending','active','rejected','disabled')", name="ck_users_status"),
     )
 
 
@@ -46,7 +109,7 @@ class Device(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
-    platform: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -57,21 +120,11 @@ class Device(Base):
     __table_args__ = (CheckConstraint("status in ('active','revoked')", name="ck_devices_status"),)
 
 
-class OfficeNetwork(Base):
-    __tablename__ = "office_networks"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
-    public_ip: Mapped[str] = mapped_column(String(64), nullable=False)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class Heartbeat(Base):
     __tablename__ = "heartbeats"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     source_ip: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -80,72 +133,64 @@ class Heartbeat(Base):
     device: Mapped["Device"] = relationship(back_populates="heartbeats")
 
 
-class RandomCheck(Base):
-    __tablename__ = "random_checks"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    date: Mapped[date] = mapped_column(Date, nullable=False)
-    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    result: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-
-    __table_args__ = (CheckConstraint("result in ('pending','passed','missed')", name="ck_random_checks_result"),)
-
-
 class AttendanceDay(Base):
+    """One row per (user, office-local date). `date` is ALWAYS the office-local date,
+    never the UTC date. Written only via presence.apply_presence_event()."""
+
     __tablename__ = "attendance_days"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     date: Mapped[date] = mapped_column(Date, nullable=False)
-    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    method: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    verification: Mapped[str | None] = mapped_column(String(20), nullable=True)
     check_in: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     check_out: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    location: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    passed_checks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_checks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    late_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "date", name="uq_attendance_days_user_date"),
-        CheckConstraint("mode in ('office','wfh','flagged','absent','pending')", name="ck_attendance_days_mode"),
+        CheckConstraint(
+            "status in ('present','late','flagged','absent','leave','off_day')",
+            name="ck_attendance_days_status",
+        ),
+        CheckConstraint("method in ('wifi','gps','manual')", name="ck_attendance_days_method"),
+        CheckConstraint("verification in ('verified','gps_pending')", name="ck_attendance_days_verification"),
     )
 
 
-class WfhRequest(Base):
-    __tablename__ = "wfh_requests"
+class CheckinAttempt(Base):
+    """Append-only audit of EVERY check-in attempt, successful or not. A double-tap
+    correctly produces two rows. This is also where GPS re-verification results land."""
+
+    __tablename__ = "checkin_attempts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    date: Mapped[date] = mapped_column(Date, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    __table_args__ = (CheckConstraint("status in ('pending','approved','rejected')", name="ck_wfh_requests_status"),)
-
-
-class ScheduleRequest(Base):
-    __tablename__ = "schedule_requests"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    start_time: Mapped[time] = mapped_column(Time, nullable=False)
-    end_time: Mapped[time] = mapped_column(Time, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    source_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    matched_office_id: Mapped[int | None] = mapped_column(
+        ForeignKey("offices.id", ondelete="SET NULL"), nullable=True
+    )
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gps_accuracy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance_meters: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result: Mapped[str] = mapped_column(String(24), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        CheckConstraint("status in ('pending','approved','rejected')", name="ck_schedule_requests_status"),
+        CheckConstraint("method in ('wifi','gps')", name="ck_checkin_attempts_method"),
+        CheckConstraint(
+            "result in ('success','ip_no_match','outside_radius','low_accuracy',"
+            "'before_shift','after_shift','off_day','already_checked_in')",
+            name="ck_checkin_attempts_result",
+        ),
     )
 
 
@@ -153,7 +198,20 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     action: Mapped[str] = mapped_column(String(80), nullable=False)
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppState(Base):
+    """Cross-process key/value state. Holds the DEV_MODE `time_override` so that
+    /debug/set-time reaches the separate scheduler process (a module global would not)."""
+
+    __tablename__ = "app_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

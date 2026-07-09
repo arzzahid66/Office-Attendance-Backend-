@@ -1,0 +1,32 @@
+# Dedicated scheduler process for the office-attendance backend.
+#
+# Runs the idle-checkout (every 15 min) and nightly-resolution (23:55) jobs. EXACTLY ONE
+# instance of this must run across the whole deployment. The API/uvicorn/gunicorn workers
+# must run WITHOUT RUN_SCHEDULER (or with RUN_SCHEDULER=false) so they never start the jobs.
+#
+# Install:
+#   sudo cp deploy/attendance-scheduler.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now attendance-scheduler
+#   journalctl -u attendance-scheduler -f
+#
+# Adjust User, WorkingDirectory and the venv path to match your VM.
+
+[Unit]
+Description=Office Attendance - scheduler (idle-checkout + nightly)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/backed/Office-Attendance-Backend-
+Environment=RUN_SCHEDULER=true
+# DATABASE_URL etc. are read from the project's .env by app.config, so no need to repeat
+# them here. If you prefer, use EnvironmentFile=/home/ubuntu/backed/Office-Attendance-Backend-/.env
+ExecStart=/home/ubuntu/backed/Office-Attendance-Backend-/venv/bin/python -m app.scheduler_main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

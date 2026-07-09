@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import log_action
 from app.database import get_db
 from app.deps import require_admin
-from app.models import AttendanceDay, Device, Roster, User
+from app.models import AttendanceDay, AuditLog, Device, Roster, User
 from app.schemas import (
     DashboardEntryOut,
     DeviceOut,
@@ -163,6 +163,31 @@ async def enable_employee(employee_id: int, db: AsyncSession = Depends(get_db), 
     await db.commit()
     await db.refresh(employee)
     return _employee_out(employee, await _active_device_count(db, employee_id))
+
+
+@router.delete("/employees/{employee_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_employee(employee_id: int, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
+    """Permanently removes the employee. Devices, heartbeats, attendance days and check-in
+    attempts go with them (ON DELETE CASCADE) — this is not reversible. Disable instead if
+    the attendance history still needs to be reportable."""
+    employee = await _get_employee(db, employee_id)
+
+    # Snapshot the identity into the audit row: after the delete, user_id points at nothing.
+    await log_action(
+        db,
+        admin.id,
+        "employee_deleted",
+        {"user_id": employee.id, "email": employee.email, "name": employee.name},
+    )
+
+    # audit_logs.actor_user_id has no ON DELETE rule, and employees are actors on their own
+    # rows (signup, device_registered). Detach them so the trail survives the user.
+    await db.execute(
+        update(AuditLog).where(AuditLog.actor_user_id == employee_id).values(actor_user_id=None)
+    )
+
+    await db.delete(employee)
+    await db.commit()
 
 
 @router.get("/employees/{employee_id}/devices", response_model=list[DeviceOut])

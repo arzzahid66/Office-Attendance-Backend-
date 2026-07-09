@@ -71,9 +71,32 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "di
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
 
+    # index.html names the content-hashed bundle, and sw.js is the PWA's precache manifest.
+    # If either is cached, the browser keeps running an old build after a rebuild — the app
+    # never learns a newer bundle exists. Files under /assets are hash-named, so they don't
+    # need this (a new build means a new URL).
+    NEVER_CACHE = {"index.html", "sw.js", "registerSW.js", "manifest.webmanifest"}
+
+    def _serve(path: Path) -> FileResponse:
+        headers = {"Cache-Control": "no-cache"} if path.name in NEVER_CACHE else None
+        return FileResponse(path, headers=headers)
+
+    def _safe_candidate(full_path: str) -> Path | None:
+        """Resolve a request path inside dist/, or None. Uvicorn hands us the raw target
+        without collapsing '..', so an unchecked join would escape dist/ and happily serve
+        backend/.env (JWT_SECRET, DATABASE_URL)."""
+        try:
+            candidate = (FRONTEND_DIST / full_path).resolve()
+        except (OSError, ValueError):
+            return None
+        if not candidate.is_relative_to(FRONTEND_DIST.resolve()):
+            return None
+        return candidate if candidate.is_file() else None
+
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        candidate = FRONTEND_DIST / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        if full_path:
+            candidate = _safe_candidate(full_path)
+            if candidate is not None:
+                return _serve(candidate)
+        return _serve(FRONTEND_DIST / "index.html")
